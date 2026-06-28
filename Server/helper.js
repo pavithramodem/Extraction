@@ -1,94 +1,56 @@
 // ==========================================
-// FIND RELEVANT TEXT
+// GROQ CLASSIFIER
 // ==========================================
+// Returns: { model: "gpt"|"gemini"|"deepseek", type: string, question: string }
+//
+// Routing rules:
+//   gpt       → explanations, reasoning, summaries, research, general knowledge
+//   gemini    → vision, image understanding, PDF visual analysis, charts
+//   deepseek  → math, algorithms, code debugging, fixing errors, stack traces
 
-function findRelevantText(context, question) {
-  if (!context) return "";
+async function classifyWithGroq(context, question, hasImage = false, callGroq) {
+  // If an image is attached, always route to Gemini
+  if (hasImage) {
+    return { model: "gemini", type: "vision", question };
+  }
 
-  const sentences = context
-    .split(/(?<=[.!?])\s+/)
-    .filter(sentence => sentence.trim().length > 10);
+  const systemPrompt = `You are an AI question router. Analyse the user's question and decide which model should answer it.
 
-  const words = question
-    .toLowerCase()
-    .split(/\s+/)
-    .filter(word => word.length > 3);
+ROUTING RULES — pick exactly one:
+- "gpt"      → general explanations, summaries, reasoning, research, brainstorming, concepts, history, comparisons, general knowledge
+- "gemini"   → questions about IMAGES, visual content, charts, diagrams, or PDF layout/structure
+- "deepseek" → CODE debugging, code review, fixing errors, stack traces, refactoring, MATH problems, algorithms, numerical computation, data structures, coding puzzles
 
-  const scoredSentences = sentences.map(sentence => {
-    let score = 0;
-    words.forEach(word => {
-      if (sentence.toLowerCase().includes(word)) score++;
-    });
-    return { sentence, score };
-  });
+Also provide a short "type" label (e.g. "summary", "debugging", "math", "vision", "explanation").
 
-  const topSentences = scoredSentences
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 5)
-    .map(item => item.sentence)
-    .join(" ");
+Respond ONLY with valid JSON. No markdown. No extra text.
+Format: {"model": "gpt", "type": "summary", "question": "<refined self-contained question>"}`;
 
-  return topSentences || context;
+  const userPrompt = `Document context (first 600 chars): ${context.slice(0, 600)}
+
+User question: ${question}
+
+Respond with JSON only.`;
+
+  const raw = await callGroq(systemPrompt, userPrompt, 0.1);
+
+  try {
+    const clean = raw.replace(/```json|```/g, "").trim();
+    const parsed = JSON.parse(clean);
+
+    const validModels = ["gpt", "gemini", "deepseek"];
+    if (!validModels.includes(parsed.model)) throw new Error("Invalid model: " + parsed.model);
+    if (!parsed.question || typeof parsed.question !== "string") throw new Error("Missing question");
+
+    return {
+      model:    parsed.model,
+      type:     parsed.type || "general",
+      question: parsed.question,
+    };
+  } catch (err) {
+    console.warn("Groq classifier parse failed, defaulting to gpt:", err.message);
+    return { model: "gpt", type: "general", question };
+  }
 }
 
-
-// ==========================================
-// DETECT GENERAL QUESTIONS
-// ==========================================
-
-function isGeneralQuestion(question) {
-  const normalized = question.toLowerCase().replace(/[?!.,]/g, "").trim();
-
-  const patterns = [
-    // summarize / summary
-    "summarize",
-    "summary",
-    "give me a summary",
-    "give summary",
-    "brief summary",
-    "short summary",
-
-    // what is this about
-    "what is this",
-    "what is this document",
-    "what is this document about",
-    "what is this about",
-    "what is the document about",
-    "what does this document",
-    "what does this document talk about",
-    "what does this talk about",
-    "what is this file about",
-    "what's this about",
-    "what's this document about",
-    "whats this about",
-    "whats this document about",
-
-    // overview / main idea
-    "overview",
-    "main idea",
-    "main topic",
-    "main point",
-    "key points",
-    "key ideas",
-
-    // describe / explain
-    "describe this document",
-    "describe this",
-    "explain this document",
-    "explain this",
-    "tell me about this document",
-    "tell me about this",
-    "what can you tell me about this",
-
-    // topic / subject
-    "what topic",
-    "what subject",
-    "what is the topic",
-    "what is the subject",
-  ];
-
-  return patterns.some(pattern => normalized.includes(pattern));
-}
-
-
-module.exports = { findRelevantText, isGeneralQuestion };
+module.exports = { classifyWithGroq };
